@@ -1,6 +1,9 @@
 const express = require('express');
 const cors = require('cors');
-require('dotenv').config();
+require('dotenv').config({ path: require('path').resolve(__dirname, '../../.env') });
+
+const supabase = require('./config/supabase');
+const uploadRoutes = require('./routes/uploadRoutes');
 
 const app = express();
 
@@ -9,16 +12,14 @@ app.use(cors());
 app.use(express.json());
 
 // Routes
-app.use('/api/text', require('./routes/text.route'));
-app.use('/api/audio', require('./routes/audio.route'));
-app.use('/api/image', require('./routes/image.route'));
+app.use('/api', uploadRoutes);
 
 // Test
 app.get('/', (req, res) => {
-  res.send('Backend meme-app OK ✅');
+  res.send('Meme App API Gateway running smoothly! ✅');
 });
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
-  console.log(`Serveur lancé sur http://localhost:${PORT}`);
+  console.log(`Server running on http://localhost:${PORT}`);
 });
