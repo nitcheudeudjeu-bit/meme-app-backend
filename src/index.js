@@ -1,24 +1,27 @@
 const express = require('express');
 const cors = require('cors');
-require('dotenv').config();
+require('dotenv').config({ path: require('path').resolve(__dirname, '../../.env') });
+
+// This imports your supabase initialization file and triggers the log!
+const supabase = require('./config/supabase'); 
+// Ensure this path matches where your routes are stored (e.g., ./routes/memeRoutes or ./routes/uploadRoutes)
+const uploadRoutes = require('./routes/uploadRoutes');
 
 const app = express();
-const PORT = process.env.PORT || 5000;
 
-// Middleware configurations
+// Middlewares
 app.use(cors());
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
-// Basic test route to check if server works
+// Main API Endpoints - Connects your /image, /text, and /audio routes
+app.use('/api', uploadRoutes);
+
+// Base sanity check route
 app.get('/', (req, res) => {
-  res.json({ 
-    status: "success", 
-    message: "Multimodal Meme Generator API is running smoothly! 🚀" 
-  });
+  res.send('Meme App API Gateway running smoothly!');
 });
 
-// Start the server listening to all local network interfaces ('0.0.0.0')
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server is running globally on network port ${PORT}`);
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`);
 });
