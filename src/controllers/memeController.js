@@ -1,127 +1,218 @@
 const supabase = require('../config/supabase');
-const openai = require('../config/openai');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { Readable } = require('stream');
 
-// Helper function to turn a Multer buffer into a readable stream for OpenAI
-const bufferToStream = (buffer) => {
-  return Readable.from(buffer);
-};
+// Initialisation Gemini
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// 1. Existing Text Controller
+// ── 1. CONTEXT READER — Analyse de texte ─────────────────────────────────────
 const processTextMeme = async (req, res) => {
   try {
     const { raw_text, device_model } = req.body;
     if (!raw_text) {
-      return res.status(400).json({ error: 'Texte manquant. Please provide raw_text.' });
+      return res.status(400).json({ error: 'Texte manquant. Fournis raw_text.' });
     }
 
-    let ai_tone_analysis = "Humoristique / Sarcastique (Fallback)";
+    let ai_tone_analysis = 'Humoristique / Sarcastique (Fallback)';
 
-    if (process.env.OPENAI_API_KEY && !process.env.OPENAI_API_KEY.startsWith('sk-proj-YOUR_')) {
-      try {
-        const completion = await openai.chat.completions.create({
-          model: "gpt-4o",
-          messages: [
-            { role: "system", content: "You are a witty meme analyst. Describe its tone in French (max 7 words)." },
-            { role: "user", content: raw_text }
-          ],
-          max_tokens: 20
-        });
-        ai_tone_analysis = completion.choices[0].message.content.trim();
-      } catch (aiError) {
-        console.error('AI Integration Warning:', aiError.message);
-      }
+    try {
+      const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+      const prompt = `Tu es un expert en mèmes humoristiques. 
+Analyse ce texte et génère une légende courte et drôle (max 10 mots) pour un mème.
+Réponds UNIQUEMENT avec la légende, rien d'autre.
+Texte : "${raw_text}"`;
+
+      const result = await model.generateContent(prompt);
+      ai_tone_analysis = result.response.text().trim();
+    } catch (aiError) {
+      console.error('Gemini Warning:', aiError.message);
     }
 
-    const simulated_meme_url = "https://placeholder-ai-meme-generation.url";
-
+    // Sauvegarde dans Supabase
     const { data, error } = await supabase
       .from('memes')
-      .insert([{ raw_text, ai_tone_analysis, generated_meme_url: simulated_meme_url, device_model: device_model || 'Unknown Device' }])
+      .insert([{
+        raw_text,
+        ai_tone_analysis,
+        generated_meme_url: 'https://picsum.photos/800/600',
+        device_model: device_model || 'Unknown',
+      }])
       .select();
 
     if (error) throw error;
-    return res.status(201).json({ message: 'Meme text record processed successfully!', data: data[0] });
+
+    return res.status(201).json({
+      message: 'Mème texte généré avec succès !',
+      data: data[0],
+    });
   } catch (error) {
+    console.error('Erreur processTextMeme :', error.message);
     return res.status(500).json({ error: error.message });
   }
 };
 
-// 2. NEW AUDIO CONTROLLER (Multer Upload + Whisper Transcription + DB Save)
+// ── 2. VOICE-TO-MEME — Transcription audio + génération ──────────────────────
 const processAudioMeme = async (req, res) => {
   try {
     const { device_model } = req.body;
 
-    // Validation: Check if Multer intercepted a file
     if (!req.file) {
-      return res.status(400).json({ error: 'Audio file missing. Please upload an audio file.' });
+      return res.status(400).json({ error: 'Fichier audio manquant.' });
     }
 
-    // A. Generate a unique filename for the audio storage folder
+    // A. Upload vers Supabase Storage
     const fileExt = req.file.originalname.split('.').pop() || 'mp3';
     const fileName = `${Date.now()}-${Math.floor(Math.random() * 1000)}.${fileExt}`;
     const filePath = `audio/${fileName}`;
 
-    // B. Upload audio file binary buffer to Supabase Bucket
-    const { data: storageData, error: storageError } = await supabase.storage
+    const { error: storageError } = await supabase.storage
       .from('meme-media')
       .upload(filePath, req.file.buffer, {
         contentType: req.file.mimetype,
-        upsert: false
+        upsert: false,
       });
 
     if (storageError) throw storageError;
 
-    // C. Acquire the public link for the uploaded audio
     const { data: { publicUrl } } = supabase.storage
       .from('meme-media')
       .getPublicUrl(filePath);
 
-    // D. WHISPER AI TRANSCRIPTION
-    let audio_transcript = "Transcription Audio (Fallback: Key not active)";
+    // B. Transcription avec Gemini Audio
+    let audio_transcript = 'Transcription indisponible';
+    let legende = 'Mème audio généré par IA';
 
-    if (process.env.OPENAI_API_KEY && !process.env.OPENAI_API_KEY.startsWith('sk-proj-YOUR_')) {
-      try {
-        const audioStream = bufferToStream(req.file.buffer);
-        audioStream.path = `speech.${fileExt}`; // Dummy path required for file type identification
+    try {
+      const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
 
-        const transcription = await openai.audio.transcriptions.create({
-          file: audioStream,
-          model: "whisper-1",
-        });
-        audio_transcript = transcription.text;
-      } catch (whisperError) {
-        console.error('⚠️ Whisper AI Warning:', whisperError.message);
-        audio_transcript = `[Transcription Fallback: ${whisperError.message}]`;
-      }
+      // Convertir le buffer en base64 pour Gemini
+      const audioBase64 = req.file.buffer.toString('base64');
+      const mimeType = req.file.mimetype || 'audio/mp4';
+
+      const result = await model.generateContent([
+        {
+          inlineData: {
+            mimeType: mimeType,
+            data: audioBase64,
+          },
+        },
+        {
+          text: `Transcris cet audio en français. 
+Réponds avec ce format JSON exact :
+{"transcription": "le texte transcrit", "legende": "une légende drôle de max 10 mots pour un mème"}`,
+        },
+      ]);
+
+      const responseText = result.response.text().trim();
+      // Nettoie le JSON si Gemini ajoute des backticks
+      const cleanJson = responseText.replace(/```json|```/g, '').trim();
+      const parsed = JSON.parse(cleanJson);
+      audio_transcript = parsed.transcription || audio_transcript;
+      legende = parsed.legende || legende;
+    } catch (geminiError) {
+      console.error('Gemini Audio Warning:', geminiError.message);
     }
 
-    // E. Create unified record inside your Supabase 'memes' table
+    // C. Sauvegarde dans Supabase
     const { data: dbData, error: dbError } = await supabase
       .from('memes')
-      .insert([
-        {
-          audio_url: publicUrl,
-          audio_transcript: audio_transcript,
-          raw_text: `[Audio Meme] ${audio_transcript.substring(0, 30)}...`,
-          device_model: device_model || 'Unknown Device',
-          ai_tone_analysis: 'Analyse audio en attente',
-          generated_meme_url: "https://placeholder-ai-meme-generation.url"
-        }
-      ])
+      .insert([{
+        audio_url: publicUrl,
+        audio_transcript,
+        raw_text: `[Audio] ${audio_transcript.substring(0, 50)}...`,
+        ai_tone_analysis: legende,
+        generated_meme_url: 'https://picsum.photos/800/600',
+        device_model: device_model || 'Unknown',
+      }])
       .select();
 
     if (dbError) throw dbError;
 
     return res.status(201).json({
-      message: 'Audio uploaded, transcribed, and logged successfully!',
-      data: dbData[0]
+      message: 'Audio transcrit et mème généré !',
+      data: dbData[0],
     });
-
   } catch (error) {
-    console.error('🔴 Audio Processing Error:', error.message);
+    console.error('Erreur processAudioMeme :', error.message);
     return res.status(500).json({ error: error.message });
   }
 };
 
-module.exports = { processTextMeme, processAudioMeme };
+// ── 3. STATUS REMIXER — Analyse d'image ───────────────────────────────────────
+const processImageMeme = async (req, res) => {
+  try {
+    const { device_model } = req.body;
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'Image manquante.' });
+    }
+
+    // A. Upload vers Supabase Storage
+    const fileExt = req.file.originalname.split('.').pop() || 'jpg';
+    const fileName = `${Date.now()}-${Math.floor(Math.random() * 1000)}.${fileExt}`;
+    const filePath = `images/${fileName}`;
+
+    const { error: storageError } = await supabase.storage
+      .from('meme-media')
+      .upload(filePath, req.file.buffer, {
+        contentType: req.file.mimetype,
+        upsert: false,
+      });
+
+    if (storageError) throw storageError;
+
+    const { data: { publicUrl } } = supabase.storage
+      .from('meme-media')
+      .getPublicUrl(filePath);
+
+    // B. Analyse de l'image avec Gemini Vision
+    let ai_tone_analysis = 'Image analysée par IA';
+
+    try {
+      const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+      const imageBase64 = req.file.buffer.toString('base64');
+      const mimeType = req.file.mimetype || 'image/jpeg';
+
+      const result = await model.generateContent([
+        {
+          inlineData: {
+            mimeType,
+            data: imageBase64,
+          },
+        },
+        {
+          text: `Regarde cette image et génère une légende drôle et courte (max 10 mots) 
+pour en faire un mème. Réponds UNIQUEMENT avec la légende.`,
+        },
+      ]);
+
+      ai_tone_analysis = result.response.text().trim();
+    } catch (geminiError) {
+      console.error('Gemini Vision Warning:', geminiError.message);
+    }
+
+    // C. Sauvegarde dans Supabase
+    const { data: dbData, error: dbError } = await supabase
+      .from('memes')
+      .insert([{
+        original_image_url: publicUrl,
+        ai_tone_analysis,
+        generated_meme_url: publicUrl,
+        raw_text: '[Image Mème]',
+        device_model: device_model || 'Unknown',
+      }])
+      .select();
+
+    if (dbError) throw dbError;
+
+    return res.status(201).json({
+      message: 'Image analysée et mème généré !',
+      data: dbData[0],
+    });
+  } catch (error) {
+    console.error('Erreur processImageMeme :', error.message);
+    return res.status(500).json({ error: error.message });
+  }
+};
+
+module.exports = { processTextMeme, processAudioMeme, processImageMeme };
